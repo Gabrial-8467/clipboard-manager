@@ -1,0 +1,43 @@
+.clipboard-history-topbar {
+    spacing: 6px;
+    margin: 6px;
+    margin-bottom: 2px;
+}
+
+.clipboard-history-search {
+    margin: 0px;
+    width: 280px;
+}
+
+.clipboard-history-clear-button {
+    background-color: #e01b24;
+    color: #ffffff;
+    border-radius: 6px;
+    padding: 0 10px;
+    font-weight: bold;
+}
+
+.clipboard-history-clear-button:hover {
+    background-color: #ff5b57;
+}
+
+.clipboard-history-clear-button:active {
+    background-color: #b01b24;
+}
+
+.clipboard-history-actions {
+    spacing: 0px;
+}
+
+.clipboard-history-action {
+    padding: 0px 5px;
+    border-radius: 4px;
+}
+
+.clipboard-history-action:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.clipboard-history-action-icon {
+    icon-size: 14px;
+}
