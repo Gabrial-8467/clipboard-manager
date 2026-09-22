@@ -228,7 +228,8 @@ export default class ClipboardHistoryExtension extends Extension {
     }
 
     _clearAll() {
-        this._snapshot = [];
+        // Pinned entries survive a clear; only the rest are dropped.
+        this._snapshot = this._snapshot.filter(e => e.pin);
         this._save();
         this._rebuildList();
     }
