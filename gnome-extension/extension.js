@@ -1,4 +1,4 @@
-import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -15,6 +15,15 @@ const KEY_TOGGLE = 'toggle-menu';
 const KEY_PREVIEW = 'preview-length';
 
 const MAX_MENU_ITEMS = 250;
+const SEARCH_DEBOUNCE_MS = 120;
+const PASTE_DELAY_MS = 70;
+
+// Paste is injected through an in-process Clutter virtual input device, the same
+// mechanism the on-screen keyboard uses (no Remote Desktop portal / permission
+// dialog). Keys are sent by evdev hardware keycode so it works under any
+// keyboard layout. Codes from <linux/input-event-codes.h>.
+const KEY_CTRL = 29; // KEY_LEFTCTRL
+const KEY_V = 47; // KEY_V
 
 function historyPath() {
     return GLib.build_filenamev([
@@ -56,6 +65,11 @@ export default class ClipboardHistoryExtension extends Extension {
     }
 
     disable() {
+        if (this._rebuildTimeout) {
+            GLib.source_remove(this._rebuildTimeout);
+            this._rebuildTimeout = 0;
+        }
+        this._keyDevice = null;
         if (this._ownerId && this._selection) {
             this._selection.disconnect(this._ownerId);
             this._ownerId = 0;
@@ -110,6 +124,37 @@ export default class ClipboardHistoryExtension extends Extension {
         } catch (e) {
             log(`clipboard-history: set_text failed: ${e}`);
         }
+    }
+
+    // Copy `text` to the clipboard and inject Ctrl+V (Shift+Ctrl+V / Ctrl+Insert
+    // in terminals is not detected yet) into the previously focused window, so a
+    // click pastes where you are typing.
+    _pasteEntry(text) {
+        this._setClipboard(text);
+        this._menu.close();
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, PASTE_DELAY_MS, () => {
+            try {
+                this._injectPaste([KEY_CTRL], KEY_V);
+            } catch (e) {
+                log(`clipboard-history: paste injection failed: ${e}`);
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // Press modifiers, press the key, then release in reverse order using
+    // monotonic timestamps (get_current_event_time() is 0 outside an event).
+    _injectPaste(modifiers, key) {
+        const device = this._keyDevice ??= (() =>
+            Clutter.get_default_backend().get_default_seat()
+                .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE))();
+        const now = () => GLib.get_monotonic_time();
+        for (const mod of modifiers)
+            device.notify_key(now(), mod, Clutter.KeyState.PRESSED);
+        device.notify_key(now(), key, Clutter.KeyState.PRESSED);
+        device.notify_key(now(), key, Clutter.KeyState.RELEASED);
+        for (const mod of [...modifiers].reverse())
+            device.notify_key(now(), mod, Clutter.KeyState.RELEASED);
     }
 
     // -- history ---------------------------------------------------------
@@ -190,6 +235,18 @@ export default class ClipboardHistoryExtension extends Extension {
 
     // -- menu ------------------------------------------------------------
 
+    // Touch-search only rebuilds ~120ms after you stop typing.
+    _rebuildDebounced() {
+        if (this._rebuildTimeout)
+            GLib.source_remove(this._rebuildTimeout);
+        this._rebuildTimeout = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, SEARCH_DEBOUNCE_MS, () => {
+                this._rebuildTimeout = 0;
+                this._rebuildList();
+                return GLib.SOURCE_REMOVE;
+            });
+    }
+
     _buildIndicator() {
         this._indicator = new PanelMenu.Button(0.0, this.metadata.name, false);
         const icon = new St.Icon({
@@ -208,7 +265,8 @@ export default class ClipboardHistoryExtension extends Extension {
             can_focus: true,
             style_class: 'clipboard-history-search',
         });
-        this._search.clutter_text.connect('text-changed', () => this._rebuildList());
+        this._search.clutter_text.connect('text-changed', () =>
+            this._rebuildDebounced());
         this._search.set_x_expand(true);
         topbar.add_child(this._search);
 
@@ -294,10 +352,7 @@ export default class ClipboardHistoryExtension extends Extension {
         actions.add_child(delBtn);
 
         item.add_child(actions);
-        item.connect('activate', () => {
-            this._setClipboard(text);
-            this._menu.close();
-        });
+        item.connect('activate', () => this._pasteEntry(text));
         return item;
     }
 

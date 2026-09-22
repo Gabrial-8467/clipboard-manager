@@ -49,7 +49,7 @@ Then **restart GNOME Shell** (Alt+F2 → `r`, or log out/in).
 
 **GNOME extension**
 - Click the `edit-paste` icon in the top bar
-- Type to filter; click an entry to copy it
+- Type to filter; click an entry to paste it where you are typing
 - Star icon = pin/unpin, trash icon = delete
 - `Ctrl+Alt+V` toggles the menu (configurable)
 
