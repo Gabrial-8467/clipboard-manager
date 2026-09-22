@@ -8,7 +8,7 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 
 LIB_DIR="$HOME/.local/lib/clipboard-manager"
 BIN_DIR="$HOME/.local/bin"
-EXT_DIR="$DATA_HOME/gnome-shell/extensions/clipboard-history@local"
+EXT_DIR="$DATA_HOME/gnome-shell/extensions/clipboard-history@gabrialdeora.github.com"
 EXT_SRC="$PROJECT_DIR/gnome-extension"
 AUTOSTART_DIR="$CONFIG_HOME/autostart"
 
@@ -54,7 +54,7 @@ if [[ "$OPT_INSTALL_EXT" -eq 1 ]]; then
     if command -v glib-compile-schemas >/dev/null; then
         glib-compile-schemas "$EXT_DIR/schemas" || true
     fi
-    UUID="clipboard-history@local"
+    UUID="clipboard-history@gabrialdeora.github.com"
     # Newly installed extensions are only discovered by the *running* shell on
     # restart, so also register ourselves as enabled up-front.
     if command -v gsettings >/dev/null; then

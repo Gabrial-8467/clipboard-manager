@@ -4,7 +4,7 @@ set -euo pipefail
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-UUID="clipboard-history@local"
+UUID="clipboard-history@gabrialdeora.github.com"
 
 echo ">> Removing clipman app"
 rm -rf "$HOME/.local/lib/clipboard-manager"

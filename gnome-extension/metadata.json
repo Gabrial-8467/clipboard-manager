@@ -1,9 +1,9 @@
 {
-  "uuid": "clipboard-history@local",
+  "uuid": "clipboard-history@gabrialdeora.github.com",
   "name": "Clipboard History",
-  "description": "Save and search your copy history right from the top bar. Pairs with the clipman GTK app (optional).",
-  "version": 1,
+  "description": "Save and search your copy history right from the top bar. Click an entry to paste it where you type. Pairs with the clipman GTK app (optional).",
+  "version": "1.0",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "settings-schema": "org.gnome.shell.extensions.clipboard-history",
-  "url": "https://github.com/gabrialdeora/clipboard-manager"
+  "url": "https://github.com/Gabrial-8467/clipboard-manager"
 }
