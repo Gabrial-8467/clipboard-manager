@@ -1,4 +1,5 @@
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
@@ -33,19 +34,6 @@ function historyPath() {
     ]);
 }
 
-function readTextFile(path) {
-    try {
-        const [ok, data] = GLib.file_get_contents(path);
-        if (!ok)
-            return null;
-        if (typeof data === 'string')
-            return data;
-        return new TextDecoder().decode(data);
-    } catch (e) {
-        return null;
-    }
-}
-
 export default class ClipboardHistoryExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
@@ -65,11 +53,23 @@ export default class ClipboardHistoryExtension extends Extension {
     }
 
     disable() {
-        if (this._rebuildTimeout) {
-            GLib.source_remove(this._rebuildTimeout);
-            this._rebuildTimeout = 0;
+        for (const id of [this._rebuildTimeout, this._pasteTimeout, this._focusIdle]) {
+            if (id)
+                GLib.source_remove(id);
         }
+        this._rebuildTimeout = null;
+        this._pasteTimeout = null;
+        this._focusIdle = null;
         this._keyDevice = null;
+
+        if (this._openStateId && this._menu) {
+            this._menu.disconnect(this._openStateId);
+            this._openStateId = 0;
+        }
+        if (this._searchChangedId && this._search?.clutter_text) {
+            this._search.clutter_text.disconnect(this._searchChangedId);
+            this._searchChangedId = 0;
+        }
         if (this._ownerId && this._selection) {
             this._selection.disconnect(this._ownerId);
             this._ownerId = 0;
@@ -79,8 +79,16 @@ export default class ClipboardHistoryExtension extends Extension {
             Main.wm.removeKeybinding(KEY_TOGGLE);
         } catch (e) {
         }
+        this._search?.destroy();
+        this._search = null;
+        this._historySection?.destroy();
+        this._historySection = null;
+        this._clearBtn?.destroy();
+        this._clearBtn = null;
         this._indicator?.destroy();
         this._indicator = null;
+        this._menu = null;
+        this._clipboard = null;
         this._settings = null;
         this._snapshot = [];
     }
@@ -132,7 +140,10 @@ export default class ClipboardHistoryExtension extends Extension {
     _pasteEntry(text) {
         this._setClipboard(text);
         this._menu.close();
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, PASTE_DELAY_MS, () => {
+        if (this._pasteTimeout)
+            GLib.source_remove(this._pasteTimeout);
+        this._pasteTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PASTE_DELAY_MS, () => {
+            this._pasteTimeout = null;
             try {
                 this._injectPaste([KEY_CTRL], KEY_V);
             } catch (e) {
@@ -161,23 +172,29 @@ export default class ClipboardHistoryExtension extends Extension {
 
     _reload() {
         this._snapshot = [];
-        const raw = readTextFile(historyPath());
-        if (!raw)
-            return;
-        for (const line of raw.split('\n')) {
-            const t = line.trim();
-            if (!t)
-                continue;
+        const file = Gio.File.new_for_path(historyPath());
+        file.load_contents_async(null, (f, result) => {
             try {
-                const item = JSON.parse(t);
-                if (item && typeof item.text === 'string')
-                    this._snapshot.push(item);
+                const [, contents] = f.load_contents_finish(result);
+                const raw = new TextDecoder().decode(contents ?? new Uint8Array());
+                for (const line of raw.split('\n')) {
+                    const t = line.trim();
+                    if (!t)
+                        continue;
+                    try {
+                        const item = JSON.parse(t);
+                        if (item && typeof item.text === 'string')
+                            this._snapshot.push(item);
+                    } catch (e) {
+                        // skip malformed line
+                    }
+                }
             } catch (e) {
-                // skip malformed line
+                // missing or unreadable history file -> empty snapshot
             }
-        }
-        this._snapshot.reverse(); // newest first
-        this._rebuildList();
+            this._snapshot.reverse(); // newest first
+            this._rebuildList();
+        });
     }
 
     _save() {
@@ -187,7 +204,17 @@ export default class ClipboardHistoryExtension extends Extension {
         const sb = [];
         for (let i = this._snapshot.length - 1; i >= 0; i--)
             sb.push(JSON.stringify(this._snapshot[i]));
-        GLib.file_set_contents(path, sb.join('\n') + '\n');
+        const file = Gio.File.new_for_path(path);
+        const bytes = new TextEncoder().encode(sb.join('\n') + '\n');
+        file.replace_contents_async(
+            bytes, null, false, Gio.FileCreateFlags.NONE, null,
+            (f, result) => {
+                try {
+                    f.replace_contents_finish(result);
+                } catch (e) {
+                    log(`clipboard-history: save failed: ${e}`);
+                }
+            });
     }
 
     _add(text) {
@@ -266,8 +293,9 @@ export default class ClipboardHistoryExtension extends Extension {
             can_focus: true,
             style_class: 'clipboard-history-search',
         });
-        this._search.clutter_text.connect('text-changed', () =>
-            this._rebuildDebounced());
+        this._searchChangedId =
+            this._search.clutter_text.connect('text-changed', () =>
+                this._rebuildDebounced());
         this._search.set_x_expand(true);
         topbar.add_child(this._search);
 
@@ -284,12 +312,15 @@ export default class ClipboardHistoryExtension extends Extension {
         this._historySection = new PopupMenu.PopupMenuSection();
         menu.addMenuItem(this._historySection);
 
-        menu.connect('open-state-changed', (m, open) => {
+        this._openStateId = menu.connect('open-state-changed', (m, open) => {
             this._menuOpen = open;
             if (open) {
                 this._reload();
                 this._search.text = '';
-                GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                if (this._focusIdle)
+                    GLib.source_remove(this._focusIdle);
+                this._focusIdle = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                    this._focusIdle = null;
                     this._search.grab_key_focus();
                     return GLib.SOURCE_REMOVE;
                 });

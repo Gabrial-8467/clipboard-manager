@@ -5,7 +5,7 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 export default class ClipboardHistoryPreferences extends ExtensionPreferences {
-    getPreferencesWidget() {
+    fillPreferencesWindow(window) {
         const settings = this.getSettings();
 
         const page = new Adw.PreferencesPage();
@@ -51,6 +51,6 @@ export default class ClipboardHistoryPreferences extends ExtensionPreferences {
         group.add(preview);
 
         page.add(group);
-        return page;
+        window.add(page);
     }
 }
