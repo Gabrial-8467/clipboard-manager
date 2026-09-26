@@ -22,6 +22,14 @@ export default class ClipboardHistoryPreferences extends ExtensionPreferences {
         settings.bind('save-history', saveSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
         group.add(saveSwitch);
 
+        const saveImages = new Adw.SwitchRow({
+            title: 'Save images',
+            subtitle: 'Keep screenshots and other image copies as entries',
+            active: settings.get_boolean('save-images'),
+        });
+        settings.bind('save-images', saveImages, 'active', Gio.SettingsBindFlags.DEFAULT);
+        group.add(saveImages);
+
         const maxItems = new Adw.SpinRow({
             title: 'Maximum items',
             subtitle: 'Oldest unpinned entries are dropped when the limit is reached; pins are never dropped',

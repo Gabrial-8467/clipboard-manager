@@ -53,6 +53,13 @@ Then **restart GNOME Shell** (Alt+F2 → `r`, or log out/in).
 - Type to filter; click an entry to paste it where you are typing
 - Star icon = pin/unpin, trash icon = delete
 - `Ctrl+Alt+V` toggles the menu (configurable)
+- Screenshots and other image copies are listed too, with a thumbnail; clicking
+  one puts the image back on the clipboard and pastes it. Images are stored in
+  `~/.local/share/clipboard-manager/images/`, named after their SHA-256, so
+  copying the same image twice costs one file. Turn this off with *Save images*.
+  When an app offers both text and an image, the text is kept.
+- Copied file paths (`file://…`, `/home/…/shot.png`) are ignored — that is the
+  text form of an image copy, not something you meant to paste later.
 
 **clipman GTK app**
 ```bash
@@ -74,6 +81,7 @@ gsettings set org.gnome.shell.extensions.clipboard-history max-items 500
 gsettings set org.gnome.shell.extensions.clipboard-history preview-length 160
 gsettings set org.gnome.shell.extensions.clipboard-history toggle-menu "['<Super>v']"
 gsettings set org.gnome.shell.extensions.clipboard-history save-history false   # monitor only
+gsettings set org.gnome.shell.extensions.clipboard-history save-images false     # text only
 ```
 
 **App**

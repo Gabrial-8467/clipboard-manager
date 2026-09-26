@@ -9,6 +9,12 @@
       <description>Whether new copies are appended to the history file.</description>
     </key>
 
+    <key name="save-images" type="b">
+      <default>true</default>
+      <summary>Save images to history</summary>
+      <description>Whether image copies such as screenshots are stored as entries. Images carry no text, so without this they leave no trace at all.</description>
+    </key>
+
     <key name="max-items" type="i">
       <default>300</default>
       <range min="10" max="2000"/>

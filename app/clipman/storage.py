@@ -11,11 +11,38 @@ In memory the entries are kept newest-first.
 
 import json
 import os
+import re
 import threading
 import time
 
 # Maximum length of a single stored item, prevents pathological copies.
 MAX_TEXT_LENGTH = 200_000
+
+# Extensions that mark a copied path as an image rather than something worth
+# keeping. Copying a file in Files, or using a tool that copies a path, offers
+# that path as text -- which is how screenshots used to end up here as bare
+# paths even though the image itself was never stored.
+_IMAGE_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+    ".tif", ".tiff", ".svg", ".avif", ".heic", ".heif",
+)
+
+
+def looks_like_image_path(text):
+    """True for a bare file:// URI or local image path.
+
+    This is the text form of an image copy. Anything with whitespace is prose,
+    and remote URLs are left alone because a link to an image is still text
+    worth keeping.
+    """
+    t = text.strip()
+    if not t or any(ch.isspace() for ch in t):
+        return False
+    if t.lower().startswith("file:"):
+        return True
+    if re.match(r"^[a-z][a-z0-9+.-]*://", t, re.IGNORECASE):
+        return False
+    return re.split(r"[?#]", t, 1)[0].lower().endswith(_IMAGE_EXTENSIONS)
 
 try:
     from xdg_base_dirs import xdg_data_home
@@ -89,13 +116,30 @@ class Storage:
         """
         budget = self.max_items
         kept = []
+        dropped = []
         for entry in self.items:  # newest first
             if entry.get("pin"):
                 kept.append(entry)
             elif budget > 0:
                 budget -= 1
                 kept.append(entry)
+            else:
+                dropped.append(entry)
         self.items = kept
+        for entry in dropped:
+            self._forget_image(entry)
+
+    def _forget_image(self, entry):
+        """Delete a stored image once no entry references it any more."""
+        path = entry.get("image")
+        if not path:
+            return
+        if any(e.get("image") == path for e in self.items):
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     def add(self, text):
         """Add a copy to history. Returns the new/updated item or None."""
@@ -103,6 +147,8 @@ class Storage:
             return None
         text = text.rstrip("\x00").strip()
         if not text:
+            return None
+        if looks_like_image_path(text):
             return None
         if len(text) > MAX_TEXT_LENGTH:
             text = text[:MAX_TEXT_LENGTH]
@@ -131,13 +177,17 @@ class Storage:
     def delete_at(self, index):
         with self._lock:
             if 0 <= index < len(self.items):
-                del self.items[index]
+                entry = self.items.pop(index)
                 self._flush()
+                self._forget_image(entry)
 
     def clear(self):
         with self._lock:
+            dropped = self.items
             self.items = []
             self._flush()
+            for entry in dropped:
+                self._forget_image(entry)
 
     # -- queries ---------------------------------------------------------
 

@@ -14,10 +14,38 @@ const KEY_SAVE = 'save-history';
 const KEY_MAX = 'max-items';
 const KEY_TOGGLE = 'toggle-menu';
 const KEY_PREVIEW = 'preview-length';
+const KEY_IMAGES = 'save-images';
 
 const MAX_MENU_ITEMS = 250;
 const SEARCH_DEBOUNCE_MS = 120;
 const PASTE_DELAY_MS = 70;
+const THUMBNAIL_SIZE = 28;
+
+// Mirrors the text mimetypes St.Clipboard itself accepts (st-clipboard.c), so
+// we can tell an image-only clipboard (a screenshot) from one that also has
+// text, without paying for a read we would throw away.
+const TEXT_MIMETYPES = [
+    'text/plain;charset=utf-8',
+    'text/plain',
+    'UTF8_STRING',
+    'STRING',
+];
+const IMAGE_MIMETYPES = [
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/bmp',
+    'image/tiff',
+    'image/gif',
+];
+// Screenshots are a few MB; anything past this is not something to keep around.
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+// Copying a file in Files, or an app that copies a path, offers the path as
+// text. That is never something worth keeping, and it is what made screenshots
+// show up here as bare paths.
+const IMAGE_FILE_EXTENSIONS =
+    /\.(png|jpe?g|gif|webp|bmp|tiff?|svg|avif|heic|heif)$/i;
 
 // Paste is injected through an in-process Clutter virtual input device, the same
 // mechanism the on-screen keyboard uses (no Remote Desktop portal / permission
@@ -34,11 +62,56 @@ function historyPath() {
     ]);
 }
 
+function imageDir() {
+    return GLib.build_filenamev([
+        GLib.get_user_data_dir(),
+        'clipboard-manager',
+        'images',
+    ]);
+}
+
+function imageExtensionFor(mime) {
+    switch (mime) {
+        case 'image/jpeg':
+            return 'jpg';
+        case 'image/tiff':
+            return 'tif';
+        default:
+            return mime.slice('image/'.length);
+    }
+}
+
+// A bare file:// URI or local image path, i.e. the text form of an image copy.
+// Anything with whitespace is prose, and remote URLs are left alone because a
+// link to an image is still text worth keeping.
+function looksLikeImagePath(text) {
+    const t = text.trim();
+    if (!t || /\s/.test(t))
+        return false;
+    if (/^file:/i.test(t))
+        return true;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t))
+        return false;
+    return IMAGE_FILE_EXTENSIONS.test(t.split(/[?#]/)[0]);
+}
+
+// Width/height out of a PNG IHDR chunk, so entries can be told apart at a
+// glance. Returns null for anything that is not a PNG we can parse.
+function pngSize(bytes) {
+    const data = bytes.get_data();
+    if (data.length < 24 || data[0] !== 0x89 || data[1] !== 0x50)
+        return null;
+    const width = ((data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19]) >>> 0;
+    const height = ((data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23]) >>> 0;
+    return width && height ? `${width}×${height}` : null;
+}
+
 export default class ClipboardHistoryExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
         this._snapshot = [];
         this._skipNext = null;
+        this._skipImage = null;
         this._menuOpen = false;
 
         this._buildIndicator();
@@ -91,6 +164,7 @@ export default class ClipboardHistoryExtension extends Extension {
         this._clipboard = null;
         this._settings = null;
         this._snapshot = [];
+        this._skipImage = null;
     }
 
     // -- clipboard -------------------------------------------------------
@@ -98,8 +172,18 @@ export default class ClipboardHistoryExtension extends Extension {
     _onOwnerChange() {
         if (!this._settings.get_boolean(KEY_SAVE))
             return;
+        const mimes = this._clipboardMimetypes();
+        const image = mimes.find(m => IMAGE_MIMETYPES.includes(m));
+        const hasText = mimes.some(m => TEXT_MIMETYPES.includes(m));
+        // Text wins when an app offers both, so existing behaviour is kept.
+        if (image && !hasText && this._settings.get_boolean(KEY_IMAGES)) {
+            this._captureImage(image);
+            return;
+        }
         this._readClipboardText(text => {
             if (typeof text !== 'string' || !text.trim())
+                return;
+            if (looksLikeImagePath(text))
                 return;
             if (this._skipNext !== null && text === this._skipNext) {
                 this._skipNext = null;
@@ -107,6 +191,79 @@ export default class ClipboardHistoryExtension extends Extension {
             }
             this._add(text);
         });
+    }
+
+    // Synchronous: st_clipboard_get_mimetypes() answers from the selection
+    // source rather than reading the data out.
+    _clipboardMimetypes() {
+        const clip = this._clipboard;
+        if (!clip)
+            return [];
+        try {
+            return clip.get_mimetypes(St.ClipboardType.CLIPBOARD) ?? [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    // Screenshots and other image copies carry no text, so they would otherwise
+    // leave no trace at all. The bytes are stored content-addressed: the same
+    // image copied twice is one file and one entry.
+    _captureImage(mime) {
+        const clip = this._clipboard;
+        if (!clip)
+            return;
+        try {
+            clip.get_content(St.ClipboardType.CLIPBOARD, mime, (_cl, bytes) => {
+                if (!bytes)
+                    return;
+                if (this._skipImage !== null) {
+                    this._skipImage = null;
+                    return;
+                }
+                if (bytes.get_size() > MAX_IMAGE_BYTES) {
+                    log(`clipboard-history: ${mime} too large (${bytes.get_size()} bytes), skipped`);
+                    return;
+                }
+                const digest = GLib.compute_checksum_for_bytes(GLib.ChecksumType.SHA256, bytes);
+                const path = GLib.build_filenamev([imageDir(), `${digest}.${imageExtensionFor(mime)}`]);
+                this._storeImage(bytes, path, () => {
+                    const size = mime === 'image/png' ? pngSize(bytes) : null;
+                    this._addItem({
+                        text: size ? `Image ${size}` : `Image (${mime.slice(6)})`,
+                        ts: Date.now(),
+                        pin: false,
+                        mime,
+                        image: path,
+                    }, path);
+                });
+            });
+        } catch (e) {
+            log(`clipboard-history: image read failed: ${e}`);
+        }
+    }
+
+    _storeImage(bytes, path, cb) {
+        const file = Gio.File.new_for_path(path);
+        try {
+            if (file.query_exists(null)) {
+                cb();
+                return;
+            }
+        } catch (e) {
+            // cannot tell, so just try to write it
+        }
+        GLib.mkdir_with_parents(imageDir(), 0o755);
+        file.replace_contents_async(
+            bytes, null, false, Gio.FileCreateFlags.NONE, null,
+            (f, result) => {
+                try {
+                    f.replace_contents_finish(result);
+                } catch (e) {
+                    log(`clipboard-history: image write failed: ${e}`);
+                }
+                cb();
+            });
     }
 
     _readClipboardText(cb) {
@@ -134,12 +291,52 @@ export default class ClipboardHistoryExtension extends Extension {
         }
     }
 
-    // Copy `text` to the clipboard and inject Ctrl+V (Shift+Ctrl+V / Ctrl+Insert
-    // in terminals is not detected yet) into the previously focused window, so a
-    // click pastes where you are typing.
-    _pasteEntry(text) {
-        this._setClipboard(text);
+    // Copy the entry back to the clipboard and inject Ctrl+V (Shift+Ctrl+V /
+    // Ctrl+Insert in terminals is not detected yet) into the previously focused
+    // window, so a click pastes where you are typing.
+    _pasteEntry(entry) {
+        if (entry.image)
+            this._pasteImageEntry(entry);
+        else
+            this._pasteTextEntry(entry.text);
         this._menu.close();
+    }
+
+    _pasteTextEntry(text) {
+        this._setClipboard(text);
+        this._schedulePaste();
+    }
+
+    // Same as a text entry, but the clipboard set is asynchronous, so the paste
+    // waits for the image to actually be on the clipboard.
+    _pasteImageEntry(entry) {
+        const clip = this._clipboard;
+        if (!clip)
+            return;
+        const file = Gio.File.new_for_path(entry.image);
+        file.load_contents_async(null, (f, result) => {
+            let bytes = null;
+            try {
+                [, bytes] = f.load_contents_finish(result);
+            } catch (e) {
+                log(`clipboard-history: image read failed: ${e}`);
+                return;
+            }
+            if (!bytes)
+                return;
+            this._skipImage = entry.image;
+            try {
+                clip.set_content(St.ClipboardType.CLIPBOARD, entry.mime, bytes);
+            } catch (e) {
+                log(`clipboard-history: image set failed: ${e}`);
+                this._skipImage = null;
+                return;
+            }
+            this._schedulePaste();
+        });
+    }
+
+    _schedulePaste() {
         if (this._pasteTimeout)
             GLib.source_remove(this._pasteTimeout);
         this._pasteTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PASTE_DELAY_MS, () => {
@@ -218,13 +415,14 @@ export default class ClipboardHistoryExtension extends Extension {
     }
 
     _add(text) {
-        const item = {
-            text,
-            ts: Date.now(),
-            pin: false,
-        };
+        this._addItem({text, ts: Date.now(), pin: false}, text);
+    }
+
+    // Text is keyed by its content, images by the file they were stored as, so
+    // re-copying something just moves the existing entry back to the top.
+    _addItem(item, key) {
         for (let i = 0; i < this._snapshot.length; i++) {
-            if (this._snapshot[i].text === text) {
+            if (this._entryKey(this._snapshot[i]) === key) {
                 const old = this._snapshot.splice(i, 1)[0];
                 this._snapshot.unshift(old);
                 if (this._menuOpen)
@@ -240,6 +438,10 @@ export default class ClipboardHistoryExtension extends Extension {
         this._save();
     }
 
+    _entryKey(entry) {
+        return entry.image ?? entry.text;
+    }
+
     // The cap counts unpinned entries only: a pin survives until the user
     // unpins or deletes it, however far that pushes the history past the limit.
     // Capping unpinned rather than the total also guarantees a fresh copy is
@@ -248,6 +450,7 @@ export default class ClipboardHistoryExtension extends Extension {
         let budget = this._settings.get_int(KEY_MAX);
         // Snapshot is newest-first, so keep the first `budget` unpinned entries
         // and drop the older ones behind them.
+        const dropped = [];
         this._snapshot = this._snapshot.filter(e => {
             if (e.pin)
                 return true;
@@ -255,7 +458,27 @@ export default class ClipboardHistoryExtension extends Extension {
                 budget--;
                 return true;
             }
+            dropped.push(e);
             return false;
+        });
+        for (const entry of dropped)
+            this._forgetImage(entry);
+    }
+
+    // Drop the stored file once no entry references it any more. Dedupe means
+    // that is normally immediate, but check first rather than assume.
+    _forgetImage(entry) {
+        if (!entry.image)
+            return;
+        if (this._snapshot.some(e => e !== entry && e.image === entry.image))
+            return;
+        const file = Gio.File.new_for_path(entry.image);
+        file.delete_async(GLib.PRIORITY_DEFAULT, null, (f, result) => {
+            try {
+                f.delete_finish(result);
+            } catch (e) {
+                // already gone, or never written
+            }
         });
     }
 
@@ -268,13 +491,17 @@ export default class ClipboardHistoryExtension extends Extension {
     _deleteEntry(entry) {
         this._snapshot = this._snapshot.filter(e => e !== entry);
         this._save();
+        this._forgetImage(entry);
         this._rebuildList();
     }
 
     _clearAll() {
         // Pinned entries survive a clear; only the rest are dropped.
+        const dropped = this._snapshot.filter(e => !e.pin);
         this._snapshot = this._snapshot.filter(e => e.pin);
         this._save();
+        for (const entry of dropped)
+            this._forgetImage(entry);
         this._rebuildList();
     }
 
@@ -379,6 +606,16 @@ export default class ClipboardHistoryExtension extends Extension {
             : text.slice(0, previewLen) + '…';
         const item = new PopupMenu.PopupMenuItem(label);
 
+        if (entry.image) {
+            const thumb = new St.Image({
+                gicon: Gio.icon_new_for_string(entry.image),
+                icon_size: THUMBNAIL_SIZE,
+                style_class: 'clipboard-history-thumb',
+            });
+            // Sits left of the label, which expands to fill the row.
+            item.insert_child_at_index(thumb, 0);
+        }
+
         const actions = new St.BoxLayout({style_class: 'clipboard-history-actions'});
         const pinBtn = new St.Button({
             style_class: 'clipboard-history-action',
@@ -401,7 +638,7 @@ export default class ClipboardHistoryExtension extends Extension {
         actions.add_child(delBtn);
 
         item.add_child(actions);
-        item.connect('activate', () => this._pasteEntry(text));
+        item.connect('activate', () => this._pasteEntry(entry));
         return item;
     }
 

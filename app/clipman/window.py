@@ -155,6 +155,9 @@ class HistoryWindow(Gtk.ApplicationWindow):
 
         pin = Gtk.Image(icon_name="view-pin-symbolic")
         pin.set_margin_top(2)
+        thumb = Gtk.Image()
+        thumb.set_pixel_size(32)
+        thumb.set_visible(False)
         label = Gtk.Label(
             label="",
             xalign=0,
@@ -169,23 +172,38 @@ class HistoryWindow(Gtk.ApplicationWindow):
         label.set_margin_bottom(6)
 
         box.append(pin)
+        box.append(thumb)
         box.append(label)
 
         list_item.set_child(box)
         list_item.pin_icon = pin
+        list_item.thumb = thumb
         list_item.label = label
 
     def _on_row_bind(self, factory, list_item):
         entry = list_item.get_item()
         list_item.label.set_text(preview(entry.text))
         list_item.pin_icon.set_visible(entry.pin)
+        image = entry.get("image")
+        list_item.thumb.set_visible(bool(image))
+        if image:
+            list_item.thumb.set_from_gicon(
+                Gio.FileIcon.new(Gio.File.new_for_path(image))
+            )
+        else:
+            list_item.thumb.set_from_gicon(None)
 
     def _on_row_unbind(self, factory, list_item):
         list_item.label.set_text("")
+        # Release the pixbuf rather than holding every screenshot in memory.
+        list_item.thumb.set_from_gicon(None)
 
     def _on_row_activate(self, list_view, selection, position):
         entry = self._entries[position]
-        self._copy(entry["text"])
+        if entry.get("image"):
+            self._copy_image(entry)
+        else:
+            self._copy(entry["text"])
 
     # -- actions ----------------------------------------------------------
 
@@ -196,6 +214,19 @@ class HistoryWindow(Gtk.ApplicationWindow):
         clipboard.set_text(text)
         self.on_copy(text)
         self._flash_status(f"Copied {len(text)} chars")
+
+    def _copy_image(self, entry):
+        path = entry.get("image")
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            self._flash_status("Image file is missing")
+            return
+        mime = entry.get("mime") or "image/png"
+        provider = Gdk.ContentProvider.new_for_bytes(mime, GLib.Bytes.new(data))
+        Gdk.Display.get_default().get_clipboard().set_content(provider)
+        self._flash_status(f"Copied image {len(data) // 1024} KB")
 
     def _selected_index(self):
         idx = self._selection.get_selected()

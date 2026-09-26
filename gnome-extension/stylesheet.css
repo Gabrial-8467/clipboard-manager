@@ -29,6 +29,10 @@
     spacing: 0px;
 }
 
+.clipboard-history-thumb {
+    padding: 0 6px 0 2px;
+}
+
 .clipboard-history-action {
     padding: 0px 5px;
     border-radius: 4px;
