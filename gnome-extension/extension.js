@@ -128,7 +128,7 @@ export default class ClipboardHistoryExtension extends Extension {
     disable() {
         for (const id of [this._rebuildTimeout, this._pasteTimeout, this._focusIdle]) {
             if (id)
-                GLib.source_remove(id);
+                GLib.Source.remove(id);
         }
         this._rebuildTimeout = null;
         this._pasteTimeout = null;
@@ -148,19 +148,23 @@ export default class ClipboardHistoryExtension extends Extension {
             this._ownerId = 0;
             this._selection = null;
         }
+        if (this._toggleId) {
+            this._settings.disconnect(this._toggleId);
+            this._toggleId = 0;
+        }
+        // removeKeybinding() throws if the accelerator was never registered,
+        // which is the normal case now that toggle-menu ships unset.
         try {
             Main.wm.removeKeybinding(KEY_TOGGLE);
         } catch (e) {
         }
-        this._search?.destroy();
-        this._search = null;
-        this._historySection?.destroy();
-        this._historySection = null;
-        this._clearBtn?.destroy();
-        this._clearBtn = null;
+        // Destroying the indicator destroys the menu and everything in it.
         this._indicator?.destroy();
         this._indicator = null;
         this._menu = null;
+        this._search = null;
+        this._historySection = null;
+        this._clearBtn = null;
         this._clipboard = null;
         this._settings = null;
         this._snapshot = [];
@@ -181,7 +185,7 @@ export default class ClipboardHistoryExtension extends Extension {
             return;
         }
         this._readClipboardText(text => {
-            if (typeof text !== 'string' || !text.trim())
+            if (!text || !text.trim())
                 return;
             if (looksLikeImagePath(text))
                 return;
@@ -338,7 +342,7 @@ export default class ClipboardHistoryExtension extends Extension {
 
     _schedulePaste() {
         if (this._pasteTimeout)
-            GLib.source_remove(this._pasteTimeout);
+            GLib.Source.remove(this._pasteTimeout);
         this._pasteTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PASTE_DELAY_MS, () => {
             this._pasteTimeout = null;
             try {
@@ -510,7 +514,7 @@ export default class ClipboardHistoryExtension extends Extension {
     // Touch-search only rebuilds ~120ms after you stop typing.
     _rebuildDebounced() {
         if (this._rebuildTimeout)
-            GLib.source_remove(this._rebuildTimeout);
+            GLib.Source.remove(this._rebuildTimeout);
         this._rebuildTimeout = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT, SEARCH_DEBOUNCE_MS, () => {
                 this._rebuildTimeout = 0;
@@ -562,7 +566,7 @@ export default class ClipboardHistoryExtension extends Extension {
                 this._reload();
                 this._search.text = '';
                 if (this._focusIdle)
-                    GLib.source_remove(this._focusIdle);
+                    GLib.Source.remove(this._focusIdle);
                 this._focusIdle = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
                     this._focusIdle = null;
                     this._search.grab_key_focus();
@@ -607,8 +611,10 @@ export default class ClipboardHistoryExtension extends Extension {
         const item = new PopupMenu.PopupMenuItem(label);
 
         if (entry.image) {
+            // Explicit file icon: the stored path is an absolute filename, not
+            // a themed icon name, so it must not go through the name lookup.
             const thumb = new St.Image({
-                gicon: Gio.icon_new_for_string(entry.image),
+                gicon: Gio.FileIcon.new(Gio.File.new_for_path(entry.image)),
                 icon_size: THUMBNAIL_SIZE,
                 style_class: 'clipboard-history-thumb',
             });
@@ -645,10 +651,22 @@ export default class ClipboardHistoryExtension extends Extension {
     // -- shortcut --------------------------------------------------------
 
     _bindShortcut() {
+        this._rebindShortcut();
+        this._toggleId = this._settings.connect(`changed::${KEY_TOGGLE}`, () => {
+            this._rebindShortcut();
+        });
+    }
+
+    _rebindShortcut() {
         try {
             Main.wm.removeKeybinding(KEY_TOGGLE);
         } catch (e) {
+            // not registered yet, nothing to remove
         }
+        // The accelerator ships unset, so there is nothing to bind until the
+        // user picks one.
+        if (this._settings.get_strv(KEY_TOGGLE).length === 0)
+            return;
         try {
             Main.wm.addKeybinding(
                 KEY_TOGGLE,

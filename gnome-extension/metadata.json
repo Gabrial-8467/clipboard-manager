@@ -1,10 +1,9 @@
 {
   "uuid": "clipboard-history@gabrialdeora.github.com",
   "name": "Clipboard History",
-  "description": "Save and search your copy history right from the top bar. Click an entry to paste it where you type. Pairs with the clipman GTK app (optional).",
-  "version": "1.0",
+  "description": "Keeps a searchable history of what you copy, and pastes an entry back where you were typing when you click it. Screenshots and other images are listed too, with a thumbnail.\n\n* Reads the clipboard to record new copies, and to paste the entry you click\n* Writes to the clipboard only when you click an entry\n* Clicking an entry sends a Ctrl+V keystroke to the window you were typing in\n* Stores history and images under ~/.local/share/clipboard-manager/ and never accesses the network\n\nPairs with the optional clipman GTK app, which reads the same history file.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
-  "settings-schema": "org.gnome.shell.extensions.clipboard-history",
   "url": "https://github.com/Gabrial-8467/clipboard-manager",
-  "icon": "clipboard-history.svg"
+  "settings-schema": "org.gnome.shell.extensions.clipboard-history",
+  "version-name": "2.0"
 }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<schemalist gettext-domain="clipboard-history">
+<schemalist>
   <schema id="org.gnome.shell.extensions.clipboard-history"
           path="/org/gnome/shell/extensions/clipboard-history/">
 
@@ -23,9 +23,9 @@
     </key>
 
     <key name="toggle-menu" type="as">
-      <default><![CDATA[['<Control><Alt>v']]]></default>
+      <default>[]</default>
       <summary>Shortcut to toggle the history menu</summary>
-      <description>An accelerator that opens or closes the clipboard history menu.</description>
+      <description>An accelerator that opens or closes the clipboard history menu. Unset by default; assign one with: gsettings set org.gnome.shell.extensions.clipboard-history toggle-menu "['&lt;Control&gt;&lt;Alt&gt;v']"</description>
     </key>
 
     <key name="preview-length" type="i">

@@ -19,14 +19,14 @@ avoid double-recording; both deduplicate, so running both is safe but noisy.
 - Re-copy any old item with a click
 - Pin / delete individual entries, clear everything
 - Pinned entries are never evicted by the size cap — they stay until you unpin or delete them. The cap applies to unpinned entries only.
-- Keyboard shortcut to toggle the menu / window
+- Optional keyboard shortcut to toggle the menu / window (unbound by default)
 - Optional global shortcut to toggle the GTK app window (GNOME)
 - History survives reboots (JSON-lines file, capped size)
 
 ## Install
 
 ```bash
-git clone https://github.com/gabrialdeora/clipboard-manager  # or copy this folder
+git clone https://github.com/Gabrial-8467/clipboard-manager  # or copy this folder
 cd clipboard-manager
 chmod +x install.sh uninstall.sh
 ./install.sh            # extension + app + autostart
@@ -52,7 +52,8 @@ Then **restart GNOME Shell** (Alt+F2 → `r`, or log out/in).
 - Click the `edit-paste` icon in the top bar
 - Type to filter; click an entry to paste it where you are typing
 - Star icon = pin/unpin, trash icon = delete
-- `Ctrl+Alt+V` toggles the menu (configurable)
+- `Ctrl+Alt+V` is **not** bound by default; set an accelerator yourself (below).
+  It applies immediately, no restart needed.
 - Screenshots and other image copies are listed too, with a thumbnail; clicking
   one puts the image back on the clipboard and pastes it. Images are stored in
   `~/.local/share/clipboard-manager/images/`, named after their SHA-256, so
@@ -80,6 +81,7 @@ extension shows up in the app and vice-versa.
 gsettings set org.gnome.shell.extensions.clipboard-history max-items 500
 gsettings set org.gnome.shell.extensions.clipboard-history preview-length 160
 gsettings set org.gnome.shell.extensions.clipboard-history toggle-menu "['<Super>v']"
+gsettings set org.gnome.shell.extensions.clipboard-history toggle-menu "[]"   # unbind
 gsettings set org.gnome.shell.extensions.clipboard-history save-history false   # monitor only
 gsettings set org.gnome.shell.extensions.clipboard-history save-images false     # text only
 ```
@@ -92,6 +94,23 @@ clipman --backend gtk        # default: GDK clipboard polling
 clipman --backend wl-paste   # event-driven, needs wl-clipboard
 ```
 
+## Building the release zip
+
+```bash
+./package.sh
+```
+
+Compiles the GSettings schema and writes
+`dist/clipboard-history@gabrialdeora.github.com.zip` for upload to
+[extensions.gnome.org](https://extensions.gnome.org). The compiled schema is
+included on purpose: GNOME Shell reads settings straight from the extension
+directory and will not compile the XML for you, so a zip without
+`schemas/gschemas.compiled` installs with broken settings.
+
+The zip contains only `metadata.json`, `extension.js`, `prefs.js`,
+`stylesheet.css`, `schemas/` and `LICENSE`. The listing icon is uploaded
+separately on the EGO website, so `clipboard-history.svg` is not shipped.
+
 ## Requirements
 
 - **Extension:** GNOME Shell ≥ 45, `gnome-extensions` tool
@@ -103,6 +122,7 @@ clipman --backend wl-paste   # event-driven, needs wl-clipboard
 ```
 clipboard-manager/
 ├── install.sh / uninstall.sh
+├── package.sh                 # builds the EGO release zip
 ├── gnome-extension/          # GNOME Shell extension
 │   ├── extension.js  prefs.js  metadata.json  stylesheet.css  schemas/
 └── app/clipman/              # Python GTK4 app
