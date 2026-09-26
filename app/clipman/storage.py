@@ -79,6 +79,24 @@ class Storage:
 
     # -- mutations -------------------------------------------------------
 
+    def _trim(self):
+        """Drop the oldest unpinned entries above the cap.
+
+        Pinned entries are exempt: a pin survives until the user unpins or
+        deletes it, however far that pushes the history past the limit. Capping
+        the unpinned entries rather than the total also guarantees a fresh copy
+        is never the one evicted.
+        """
+        budget = self.max_items
+        kept = []
+        for entry in self.items:  # newest first
+            if entry.get("pin"):
+                kept.append(entry)
+            elif budget > 0:
+                budget -= 1
+                kept.append(entry)
+        self.items = kept
+
     def add(self, text):
         """Add a copy to history. Returns the new/updated item or None."""
         if not text:
@@ -100,8 +118,7 @@ class Storage:
 
             item = {"text": text, "ts": now_ms(), "pin": False}
             self.items.insert(0, item)
-            if len(self.items) > self.max_items:
-                del self.items[self.max_items :]
+            self._trim()
             self._flush()
             return item
 

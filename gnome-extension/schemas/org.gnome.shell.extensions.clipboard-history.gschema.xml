@@ -13,7 +13,7 @@
       <default>300</default>
       <range min="10" max="2000"/>
       <summary>Maximum number of items to keep</summary>
-      <description>When the history reaches this size the oldest entries are dropped.</description>
+      <description>When the number of unpinned entries reaches this size the oldest are dropped. Pinned entries do not count towards this limit and are never dropped by it.</description>
     </key>
 
     <key name="toggle-menu" type="as">

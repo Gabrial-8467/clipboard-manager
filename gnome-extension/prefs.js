@@ -24,7 +24,7 @@ export default class ClipboardHistoryPreferences extends ExtensionPreferences {
 
         const maxItems = new Adw.SpinRow({
             title: 'Maximum items',
-            subtitle: 'Oldest entries are dropped when the limit is reached',
+            subtitle: 'Oldest unpinned entries are dropped when the limit is reached; pins are never dropped',
             adjustment: new Gtk.Adjustment({
                 lower: 10,
                 upper: 2000,

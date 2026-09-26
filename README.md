@@ -18,6 +18,7 @@ avoid double-recording; both deduplicate, so running both is safe but noisy.
 - Searchable history (pinned items always first)
 - Re-copy any old item with a click
 - Pin / delete individual entries, clear everything
+- Pinned entries are never evicted by the size cap — they stay until you unpin or delete them. The cap applies to unpinned entries only.
 - Keyboard shortcut to toggle the menu / window
 - Optional global shortcut to toggle the GTK app window (GNOME)
 - History survives reboots (JSON-lines file, capped size)

@@ -148,7 +148,10 @@ def build_parser():
         prog="clipman", description="Clipboard history manager"
     )
     p.add_argument(
-        "--max-items", type=int, default=500, help="keep at most N items"
+        "--max-items",
+        type=int,
+        default=500,
+        help="keep at most N unpinned items (pins are never dropped)",
     )
     p.add_argument(
         "--backend",

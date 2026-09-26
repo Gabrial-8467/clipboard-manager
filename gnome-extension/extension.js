@@ -234,12 +234,29 @@ export default class ClipboardHistoryExtension extends Extension {
             }
         }
         this._snapshot.unshift(item);
-        const max = this._settings.get_int(KEY_MAX);
-        if (this._snapshot.length > max)
-            this._snapshot.length = max;
+        this._trim();
         if (this._menuOpen)
             this._rebuildList();
         this._save();
+    }
+
+    // The cap counts unpinned entries only: a pin survives until the user
+    // unpins or deletes it, however far that pushes the history past the limit.
+    // Capping unpinned rather than the total also guarantees a fresh copy is
+    // never the one evicted.
+    _trim() {
+        let budget = this._settings.get_int(KEY_MAX);
+        // Snapshot is newest-first, so keep the first `budget` unpinned entries
+        // and drop the older ones behind them.
+        this._snapshot = this._snapshot.filter(e => {
+            if (e.pin)
+                return true;
+            if (budget > 0) {
+                budget--;
+                return true;
+            }
+            return false;
+        });
     }
 
     _togglePin(entry) {
