@@ -24,7 +24,7 @@ export default class ClipboardHistoryPreferences extends ExtensionPreferences {
 
         const saveImages = new Adw.SwitchRow({
             title: 'Save images',
-            subtitle: 'Keep screenshots and other image copies as entries',
+            subtitle: 'Keep screenshots and other image copies as entries, including files the screenshot tool writes to Pictures/Screenshots',
             active: settings.get_boolean('save-images'),
         });
         settings.bind('save-images', saveImages, 'active', Gio.SettingsBindFlags.DEFAULT);

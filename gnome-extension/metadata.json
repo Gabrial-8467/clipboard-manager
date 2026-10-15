@@ -5,5 +5,5 @@
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/Gabrial-8467/clipboard-manager",
   "settings-schema": "org.gnome.shell.extensions.clipboard-history",
-  "version-name": "2.0"
+  "version-name": "2.1"
 }

@@ -15,6 +15,7 @@ avoid double-recording; both deduplicate, so running both is safe but noisy.
 ## Features
 
 - Automatic capture of every text copy (Ctrl+C in any app)
+- Screenshots are captured too, from the clipboard or the screenshots folder
 - Searchable history (pinned items always first)
 - Re-copy any old item with a click
 - Pin / delete individual entries, clear everything
@@ -59,6 +60,12 @@ Then **restart GNOME Shell** (Alt+F2 → `r`, or log out/in).
   `~/.local/share/clipboard-manager/images/`, named after their SHA-256, so
   copying the same image twice costs one file. Turn this off with *Save images*.
   When an app offers both text and an image, the text is kept.
+- Screenshots you take are saved as well. The screenshots folder
+  (`~/Pictures/Screenshots`, or your XDG pictures dir) is watched, so a
+  screenshot lands in the history with its dimensions whether or not the
+  screenshot tool copied it to the clipboard. A screenshot that was also copied
+  is one entry, not two. Files already in the folder when the extension starts
+  are left alone.
 - Copied file paths (`file://…`, `/home/…/shot.png`) are ignored — that is the
   text form of an image copy, not something you meant to paste later.
 

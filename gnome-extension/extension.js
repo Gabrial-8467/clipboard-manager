@@ -41,6 +41,26 @@ const IMAGE_MIMETYPES = [
 // Screenshots are a few MB; anything past this is not something to keep around.
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
+// A screenshot file is still being written when the monitor first reports it,
+// so the read is delayed until the write has settled.
+const SCREENSHOT_SETTLE_MS = 500;
+
+// Screenshots taken with the shell's own tool land here. The clipboard picks
+// up most of them, but not the ones the tool is told to save without copying,
+// so the file appearing is watched too.
+const SCREENSHOTS_SUBDIR = 'Screenshots';
+
+const IMAGE_MIME_BY_EXT = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    tif: 'image/tiff',
+    tiff: 'image/tiff',
+    gif: 'image/gif',
+};
+
 // Copying a file in Files, or an app that copies a path, offers the path as
 // text. That is never something worth keeping, and it is what made screenshots
 // show up here as bare paths.
@@ -97,13 +117,61 @@ function looksLikeImagePath(text) {
 
 // Width/height out of a PNG IHDR chunk, so entries can be told apart at a
 // glance. Returns null for anything that is not a PNG we can parse.
-function pngSize(bytes) {
-    const data = bytes.get_data();
+function pngSize(data) {
     if (data.length < 24 || data[0] !== 0x89 || data[1] !== 0x50)
         return null;
     const width = ((data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19]) >>> 0;
     const height = ((data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23]) >>> 0;
     return width && height ? `${width}×${height}` : null;
+}
+
+// The shell writes a screenshot to a temporary name and renames it, so a file
+// can still be mid-write when it shows up. Checking the trailer is enough to
+// tell a finished image from a partial one; if it looks unfinished, the write
+// sends one more event and the file is read again.
+function looksCompleteImage(data, mime) {
+    const size = data.length;
+    const tail = offset => data[size - offset];
+    switch (mime) {
+        case 'image/png':
+            // IEND is the final chunk: its type sits at offset -8..-5.
+            return size >= 16 &&
+                tail(8) === 0x49 && tail(7) === 0x45 &&
+                tail(6) === 0x4e && tail(5) === 0x44;
+        case 'image/jpeg':
+            return size >= 4 && tail(2) === 0xff && tail(1) === 0xd9;
+        case 'image/gif':
+            return size >= 2 && tail(1) === 0x3b;
+        case 'image/webp': {
+            // The RIFF header states the file size, so a short read shows up.
+            if (size < 16 || data[8] !== 0x57 || data[9] !== 0x45) // 'WE' of 'WEBP'
+                return false;
+            const riffSize = (data[4] | (data[5] << 8) | (data[6] << 16)) + 8;
+            return riffSize === size;
+        }
+        default:
+            // bmp and tiff have no trailer to check cheaply.
+            return size > 0;
+    }
+}
+
+// The folders the shell may write screenshots to: the XDG pictures directory
+// and the usual ~/Pictures fallback, deduplicated.
+function screenshotDirs() {
+    const dirs = [];
+    const pictures = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_PICTURES);
+    if (pictures)
+        dirs.push(GLib.build_filenamev([pictures, SCREENSHOTS_SUBDIR]));
+    const home = GLib.get_home_dir();
+    if (home)
+        dirs.push(GLib.build_filenamev([home, 'Pictures', SCREENSHOTS_SUBDIR]));
+    return [...new Set(dirs)];
+}
+
+// The clipboard hands out a GLib.Bytes, Gio hands out a plain Uint8Array, and
+// the two do not share a single method. Everything below works on the array.
+function toBytes(data) {
+    return data instanceof Uint8Array ? data : data.get_data();
 }
 
 export default class ClipboardHistoryExtension extends Extension {
@@ -121,6 +189,12 @@ export default class ClipboardHistoryExtension extends Extension {
         this._selection = global.display.get_selection();
         this._ownerId = this._selection?.connect('owner-changed', () =>
             this._onOwnerChange());
+
+        this._screenshotMonitors = [];
+        this._screenshotTimeouts = new Map();
+        this._screenshotImagesId = this._settings.connect(
+            `changed::${KEY_IMAGES}`, () => this._syncScreenshotWatch());
+        this._syncScreenshotWatch();
 
         this._reload();
     }
@@ -147,6 +221,11 @@ export default class ClipboardHistoryExtension extends Extension {
             this._selection.disconnect(this._ownerId);
             this._ownerId = 0;
             this._selection = null;
+        }
+        this._stopScreenshotWatch();
+        if (this._screenshotImagesId) {
+            this._settings?.disconnect(this._screenshotImagesId);
+            this._screenshotImagesId = 0;
         }
         if (this._toggleId) {
             this._settings.disconnect(this._toggleId);
@@ -218,15 +297,16 @@ export default class ClipboardHistoryExtension extends Extension {
         if (!clip)
             return;
         try {
-            clip.get_content(St.ClipboardType.CLIPBOARD, mime, (_cl, bytes) => {
-                if (!bytes)
+            clip.get_content(St.ClipboardType.CLIPBOARD, mime, (_cl, raw) => {
+                if (!raw)
                     return;
                 if (this._skipImage !== null) {
                     this._skipImage = null;
                     return;
                 }
-                if (bytes.get_size() > MAX_IMAGE_BYTES) {
-                    log(`clipboard-history: ${mime} too large (${bytes.get_size()} bytes), skipped`);
+                const bytes = toBytes(raw);
+                if (bytes.length > MAX_IMAGE_BYTES) {
+                    log(`clipboard-history: ${mime} too large (${bytes.length} bytes), skipped`);
                     return;
                 }
                 const digest = GLib.compute_checksum_for_bytes(GLib.ChecksumType.SHA256, bytes);
@@ -245,6 +325,117 @@ export default class ClipboardHistoryExtension extends Extension {
         } catch (e) {
             log(`clipboard-history: image read failed: ${e}`);
         }
+    }
+
+    // -- screenshots -----------------------------------------------------
+
+    // Images on the clipboard are the common path, but a screenshot saved to
+    // disk without a clipboard copy only leaves a file behind. Watching the
+    // screenshots folder is what makes "take a screenshot" behave like "copy
+    // text" for every shell version and every screenshot-tool setting.
+    _syncScreenshotWatch() {
+        const wanted = this._settings?.get_boolean(KEY_IMAGES) ?? false;
+        if (!wanted) {
+            this._stopScreenshotWatch();
+            return;
+        }
+        if (!this._screenshotMonitors?.length)
+            for (const dir of screenshotDirs())
+                this._watchDir(Gio.File.new_for_path(dir), true);
+    }
+
+    _watchDir(dir, isScreenshotsDir) {
+        try {
+            // The folder is created on the first screenshot, so its parent is
+            // watched too until it exists.
+            if (!dir.query_exists(null)) {
+                if (isScreenshotsDir)
+                    return this._watchDir(dir.get_parent(), false);
+                return;
+            }
+            const monitor = dir.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+            monitor.connect('changed', (_m, file, _other, event) => {
+                if (!isScreenshotsDir) {
+                    if (file.get_basename() === SCREENSHOTS_SUBDIR)
+                        this._watchDir(file, true);
+                    return;
+                }
+                if (event === Gio.FileMonitorEvent.CREATED ||
+                    event === Gio.FileMonitorEvent.CHANGED ||
+                    event === Gio.FileMonitorEvent.MOVED_IN)
+                    this._queueScreenshot(file);
+            });
+            this._screenshotMonitors.push(monitor);
+        } catch (e) {
+            log(`clipboard-history: screenshot watch failed: ${e}`);
+        }
+    }
+
+    _stopScreenshotWatch() {
+        for (const monitor of this._screenshotMonitors ?? [])
+            monitor.cancel();
+        this._screenshotMonitors = [];
+        for (const id of this._screenshotTimeouts?.values() ?? [])
+            GLib.Source.remove(id);
+        this._screenshotTimeouts?.clear();
+    }
+
+    _queueScreenshot(file) {
+        const path = file.get_path();
+        if (!path)
+            return;
+        const ext = path.split('.').pop()?.toLowerCase();
+        if (!IMAGE_MIME_BY_EXT[ext])
+            return;
+        // One screenshot often arrives as several events, so keep only the last.
+        if (this._screenshotTimeouts.has(path))
+            GLib.Source.remove(this._screenshotTimeouts.get(path));
+        this._screenshotTimeouts.set(path, GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, SCREENSHOT_SETTLE_MS, () => {
+                this._screenshotTimeouts.delete(path);
+                this._addScreenshot(path, IMAGE_MIME_BY_EXT[ext]);
+                return GLib.SOURCE_REMOVE;
+            }));
+    }
+
+    // Stored content-addressed like a clipboard image, so a screenshot that was
+    // also copied to the clipboard is one file and one entry, not two.
+    _addScreenshot(path, mime) {
+        if (!this._settings)
+            return;
+        Gio.File.new_for_path(path).load_contents_async(null, (f, result) => {
+            let raw = null;
+            try {
+                [, raw] = f.load_contents_finish(result);
+            } catch (e) {
+                return; // renamed, deleted, or not readable
+            }
+            if (!raw)
+                return;
+            const bytes = toBytes(raw);
+            if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES)
+                return;
+            if (!looksCompleteImage(bytes, mime))
+                return; // still being written; the next event retries
+            if (!this._settings?.get_boolean(KEY_SAVE) ||
+                !this._settings?.get_boolean(KEY_IMAGES))
+                return;
+            const digest = GLib.compute_checksum_for_bytes(GLib.ChecksumType.SHA256, bytes);
+            const stored = GLib.build_filenamev([
+                imageDir(),
+                `${digest}.${imageExtensionFor(mime)}`,
+            ]);
+            this._storeImage(bytes, stored, () => {
+                const size = mime === 'image/png' ? pngSize(bytes) : null;
+                this._addItem({
+                    text: size ? `Screenshot ${size}` : `Screenshot (${mime.slice(6)})`,
+                    ts: Date.now(),
+                    pin: false,
+                    mime,
+                    image: stored,
+                }, stored);
+            });
+        });
     }
 
     _storeImage(bytes, path, cb) {
@@ -319,18 +510,21 @@ export default class ClipboardHistoryExtension extends Extension {
             return;
         const file = Gio.File.new_for_path(entry.image);
         file.load_contents_async(null, (f, result) => {
-            let bytes = null;
+            let raw = null;
             try {
-                [, bytes] = f.load_contents_finish(result);
+                [, raw] = f.load_contents_finish(result);
             } catch (e) {
                 log(`clipboard-history: image read failed: ${e}`);
                 return;
             }
-            if (!bytes)
+            if (!raw)
                 return;
             this._skipImage = entry.image;
             try {
-                clip.set_content(St.ClipboardType.CLIPBOARD, entry.mime, bytes);
+                // set_content() wants a GLib.Bytes, and load_contents_finish
+                // returns a plain array.
+                clip.set_content(St.ClipboardType.CLIPBOARD, entry.mime,
+                    GLib.Bytes.new(toBytes(raw)));
             } catch (e) {
                 log(`clipboard-history: image set failed: ${e}`);
                 this._skipImage = null;
@@ -597,8 +791,14 @@ export default class ClipboardHistoryExtension extends Extension {
             // empty state intentionally left blank
         } else {
             const previewLen = this._settings.get_int(KEY_PREVIEW);
-            for (const entry of ordered)
-                this._historySection.addMenuItem(this._makeItem(entry, previewLen));
+            for (const entry of ordered) {
+                // One entry that cannot be built must not cost the whole list.
+                try {
+                    this._historySection.addMenuItem(this._makeItem(entry, previewLen));
+                } catch (e) {
+                    log(`clipboard-history: entry failed: ${e}`);
+                }
+            }
         }
         this._menu.addMenuItem(this._historySection);
     }
@@ -611,15 +811,20 @@ export default class ClipboardHistoryExtension extends Extension {
         const item = new PopupMenu.PopupMenuItem(label);
 
         if (entry.image) {
-            // Explicit file icon: the stored path is an absolute filename, not
-            // a themed icon name, so it must not go through the name lookup.
-            const thumb = new St.Image({
-                gicon: Gio.FileIcon.new(Gio.File.new_for_path(entry.image)),
-                icon_size: THUMBNAIL_SIZE,
-                style_class: 'clipboard-history-thumb',
-            });
-            // Sits left of the label, which expands to fill the row.
-            item.insert_child_at_index(thumb, 0);
+            // St.Image does not exist in St 18 (GNOME 50) and threw there,
+            // which used to abort the whole list. St.Icon renders a file gicon
+            // scaled to icon_size, and a failure must never cost the row.
+            try {
+                const thumb = new St.Icon({
+                    gicon: Gio.FileIcon.new(Gio.File.new_for_path(entry.image)),
+                    icon_size: THUMBNAIL_SIZE,
+                    style_class: 'clipboard-history-thumb',
+                });
+                // Sits left of the label, which expands to fill the row.
+                item.insert_child_at_index(thumb, 0);
+            } catch (e) {
+                log(`clipboard-history: thumbnail failed: ${e}`);
+            }
         }
 
         const actions = new St.BoxLayout({style_class: 'clipboard-history-actions'});
